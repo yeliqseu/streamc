@@ -5,13 +5,19 @@ UNAME := $(shell uname)
 CC := gcc
 ifeq ($(UNAME), Darwin)
 	SED = gsed
-	CC  = gcc-8
+	CC  = gcc-9
 endif
-CFLAGS = -std=c99 -g -lm
-STREAMC = encoder.o galois.o decoder.o
+CFLAGS = -std=c99 -O3 -lm
+STREAMC = encoder.o galois.o decoder.o mt19937ar.o
 
-streamcTest: $(STREAMC) test.c
+libstreamc.a: $(STREAMC)
+	ar rcs $@ $^
+
+streamcTestIrreg: $(STREAMC) test_irregular.c
 	$(CC) -o $@ $^ $(CFLAGS)
+
+#streamcTestGilbert: $(STREAMC) test_gilbert.c
+#	$(CC) -o $@ $^ $(CFLAGS)
 
 %.o: %.c $(DEPS)
 	$(CC) -c -o $@ $< $(CFLAGS)
@@ -20,4 +26,4 @@ streamcTest: $(STREAMC) test.c
 .PHONY: clean
 
 clean:
-	rm -f *.o streamcTest
+	rm -f *.o streamcTestIrreg libstreamc.a

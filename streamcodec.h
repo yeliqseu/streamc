@@ -1,14 +1,25 @@
 #include <stdio.h>
 #include <string.h>
-#include "galois.h"
+#ifndef GALOIS
+#define GALOIS
+typedef unsigned char GF_ELEMENT;
+#endif
+#define N       624                 // used by mt-19937 PRNG
+#define EWIN    100000              // largest supported encoding window (for coefficient synchronization)
 
 #define ALIGN(a, b) ((a) % (b) == 0 ? (a)/(b) : (a)/(b) + 1)
+
+typedef struct mt19937_rng {
+    unsigned long   mt[N];          // the array for the state vector
+    int             mti;            // initialize to mti==N+1, means mt[N] is not initialized
+} MT19937;
 
 struct parameters {
     int     gfpower;                // n of GF(2^n)
     int     pktsize;                // number of bytes per packet
     //int     repintvl;               // interval of repair packets
     double  repfreq;                // frequency (probability) of sending repair packet
+    int     seed;                   // seed for random coding coefficients
 };
 
 struct packet {
@@ -25,9 +36,19 @@ struct encoder {
     int         count;              // total number of sent packets
     int         nextsid;            // id of source packet next to send
     int         rcount;             // number of sent repair packets 
-    int         snum;               // number of actual available source packets (snum<=bufsize, realloc(ENC_ALLOC) when needed)
-    int         bufsize;            // buffer size for source packets
+    // A ring buffer
+    // a) Buffer size is doubled (initial ENC_ALLOC) when buffer is full
+    // b) Acknowledged packets are flushed from the buffer
+    // c) Encoding window [headsid, nextsid-1] (watch for wrap around of their location)
+    int         bufsize;            // current buffer size
+    int         snum;               // number of queued source packets (including flushed)
+    int         head;               // head index buffered source packets 
+    int         tail;               // tail index of bufferred source packets
+    int         headsid;            // source packet id of head
+    int         tailsid;            // source packet id of tail
     GF_ELEMENT  **srcpkt;           // available source packets for encoding
+    // A mt19973 PRNG for synchronizing encoding coefficients
+    MT19937     prng;
 };
 
 typedef struct row_vector {
@@ -45,16 +66,28 @@ struct decoder {
     ROW_VEC     **row;
     GF_ELEMENT  **message;
     GF_ELEMENT  **recovered;
+    int         prev_rep;           // id of the previous received repair packet
+    MT19937     prng;
 };
 
 // encoder functions
 struct encoder *initialize_encoder(struct parameters *cp, unsigned char *buf, int nbytes);
-int enqueue_packet(struct encoder *ec);
+int enqueue_packet(struct encoder *ec, int sourceid, GF_ELEMENT *syms);
 struct packet *generate_packet(struct encoder *ec);
+struct packet *output_source_packet(struct encoder *ec);
+struct packet *output_repair_packet(struct encoder *ec);
+void flush_acked_packets(struct encoder *ec, int ack_sid);
+void visualize_buffer(struct encoder *ec);
 void free_packet(struct packet *pkt);
+unsigned char *serialize_packet(struct encoder *ec, struct packet *pkt);
 
 // decoder functions
 struct decoder *initialize_decoder(struct parameters *cp);
 int activate_decoder(struct decoder *dc, struct packet *pkt);
 int receive_packet(struct decoder *dc, struct packet *pkt);
 int process_packet(struct decoder *dc, struct packet *pkt);
+struct packet *deserialize_packet(struct decoder *dc, unsigned char *pktstr);
+
+// pseudo-random number generator
+void mt19937_init(unsigned long s, unsigned long *mt);
+unsigned long mt19937_randint(unsigned long *mt, int *mti);
