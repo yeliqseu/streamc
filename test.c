@@ -10,9 +10,10 @@ int slot = -1;                      // time slot
 int T_P = 0;
 int *arrival_time  = NULL;          // time arriving at the sending queue
 int *sent_time     = NULL;          // sending time of each source packet uncoded
-int *deliver_time  = NULL;          // in-order delivery of each source packet at decoder      
 int *inorder_delay = NULL;          // in-order delay := deli_time - sent_time[i];
 
+static struct packet *generate_packet(struct encoder *ec);
+static int time_to_send_repair(struct encoder *ec);
 
 // Used for testing irregular insertion of repair packets
 // Implemented via specifying position of source packets to save space and looping compleixty
@@ -84,7 +85,6 @@ int main(int argc, char *argv[])
     // initialize timers
     arrival_time = calloc(snum, sizeof(int));
     sent_time    = calloc(snum, sizeof(int));
-    deliver_time = calloc(snum, sizeof(int));
     // Enqueue all packets to sending queue at the beginning of the transmission if arrival rate set to 0
     int eqnsid;
     if (arrival == 0) {
@@ -160,8 +160,57 @@ int main(int argc, char *argv[])
         printf("[Summary] All source packets are recovered correctly\n");
         printf("[Summary] snum: %d repfreq: %.3f erasure: %.3f nuses: %d \n", snum, cp.repfreq, pe, nuse);
     }
-    for (int i=0; i<snum; i++) {
-        printf("[Summary] Arrival of source packet %d : %d\t sent at %d\t delivered at\t %d sent-to-deliver-delay: %d \t total-delay: %d\n", \
-                    i, arrival_time[i], sent_time[i], deliver_time[i], deliver_time[i]-sent_time[i], deliver_time[i]-arrival_time[i]);
+}
+
+struct packet *generate_packet(struct encoder *ec)
+{
+    if (ec->snum == 0 || ec->head == -1) {
+        // no packet has been queued or all previously queued packets have been flushed
+        return NULL;
     }
+    // Generate a packet
+    // Send a repair packet if 1) all the buffered packets have been sent in uncoded form once or 2) if we have sent 
+    // at least one uncoded packet and a coin-toss (or timer for regular insertation)determines to send a repair packet
+    int i, pos;
+    struct packet *pkt;
+    if (time_to_send_repair(ec)) {
+        pkt = output_repair_packet(ec);
+    } else {
+        // send a source packet
+        pkt = output_source_packet(ec);
+        sent_time[pkt->sourceid] = slot;    // record transmit time of the source packet
+    }
+    return pkt;
+}
+
+
+static int time_to_send_repair(struct encoder *ec)
+{
+    int nextsid = ec->nextsid;
+    if (irreg_range != 0) {
+        int sent = nextsid + ec->rcount;        // number of sent packets so far
+        if ( nextsid >= ec->snum) {
+            return 1;   // no more source packets to send
+        }
+        int match = 0;
+        for (int i=0; i<irreg_snum; i++) {
+            if (sent % irreg_range == irreg_spos[i]) {
+                match = 1;
+                break;
+            }
+        }
+        if (nextsid>0 && nextsid > ec->headsid && match==0) {
+            return 1;
+        }
+        return 0;
+    } else {
+        if ( nextsid >= ec->snum 
+            || (nextsid > 0 && nextsid > ec->headsid && ec->cp->repfreq < 1 && rand() % 1000 <= ec->cp->repfreq*1000)
+            || (nextsid > 0 && nextsid > ec->headsid && ec->cp->repfreq >=1 && (ec->count + 1) % ((int)ec->cp->repfreq+1) == 0) ) {
+            return 1;
+        } else {
+            return 0;
+        }
+    }
+
 }

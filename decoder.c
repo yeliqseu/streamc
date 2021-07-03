@@ -1,13 +1,8 @@
 #include "streamcodec.h"
+#include "galois.h"
 #include <assert.h>
 #define DEC_ALLOC   100000
 #define WIN_ALLOC   100000
-
-extern int slot;
-extern int *deliver_time;
-extern int *sent_time;
-
-extern int T_P;
 
 struct decoder *initialize_decoder(struct parameters *cp)
 {
@@ -22,17 +17,24 @@ struct decoder *initialize_decoder(struct parameters *cp)
     dc->message = calloc(WIN_ALLOC, sizeof(GF_ELEMENT*));
     dc->recovered = calloc(DEC_ALLOC, sizeof(GF_ELEMENT*));
     dc->prev_rep = -1;
-    printf("[Decoder] Coding coefficient PRNG seed: %d\n", cp->seed);
+    DEBUG_PRINT(("[Decoder] Coding coefficient PRNG seed: %d\n", cp->seed));
     dc->prng.mti = N + 1;
     mt19937_init(cp->seed, dc->prng.mt);
+    constructField(cp->gfpower);
+    // allocate a single-packet buffer for deserialize packet
+    int pktsize = dc->cp->pktsize;
+    dc->pbuf = calloc(1, sizeof(struct packet));
+    dc->pbuf->coes = NULL;
+    dc->pbuf->syms = calloc(pktsize, sizeof(GF_ELEMENT));
     return dc;
 }
 
 struct packet *deserialize_packet(struct decoder *dc, unsigned char *pktstr)
 {
-    int pktsize = dc->cp->pktsize;
-    struct packet *pkt = calloc(1, sizeof(struct packet));
-    pkt->syms = calloc(pktsize, sizeof(GF_ELEMENT));
+    // int pktsize = dc->cp->pktsize;
+    // struct packet *pkt = calloc(1, sizeof(struct packet));
+    // pkt->syms = calloc(pktsize, sizeof(GF_ELEMENT));
+    struct packet *pkt = dc->pbuf;
     memcpy(&pkt->sourceid, pktstr, sizeof(int));
     memcpy(&pkt->repairid, pktstr+sizeof(int), sizeof(int));
     memcpy(&pkt->win_s, pktstr+sizeof(int)*2, sizeof(int));
@@ -49,6 +51,9 @@ struct packet *deserialize_packet(struct decoder *dc, unsigned char *pktstr)
         }
         // recover coding coefficients using PRNG
         int width = pkt->win_e - pkt->win_s + 1;
+        if (pkt->coes != NULL) {
+            free(pkt->coes);
+        }
         pkt->coes = calloc(width, sizeof(GF_ELEMENT));
         for (j=0; j<width; j++) {
             GF_ELEMENT co = mt19937_randint(dc->prng.mt, &dc->prng.mti) % (1 << dc->cp->gfpower);
@@ -75,25 +80,24 @@ int receive_packet(struct decoder *dc, struct packet *pkt)
                 // in-order delievery, store it
                 dc->recovered[pkt->sourceid] = calloc(pktsize, sizeof(GF_ELEMENT));
                 memcpy(dc->recovered[pkt->sourceid], pkt->syms, pktsize*sizeof(GF_ELEMENT));
-                printf("[Decoder] Receive in-order source packet %d \n", pkt->sourceid);
+                DEBUG_PRINT(("[Decoder] Receive in-order source packet %d \n", pkt->sourceid));
                 // printf("[Decoder] delay of source packet %d : 0 \n", pkt->sourceid);
-                deliver_time[pkt->sourceid] = slot;    // record in-order delivery time
                 dc->inorder += 1;
                 return 0;
             } else {
                 // missing source packet
-                printf("[Decoder] Receives source packet %d but in-order is %d, activating decoder...\n", pkt->sourceid, dc->inorder);
+                DEBUG_PRINT(("[Decoder] Receives source packet %d but in-order is %d, activating decoder...\n", pkt->sourceid, dc->inorder));
                 activate_decoder(dc, pkt);
             }
         } else {
             // A repair packet received 
             if (pkt->win_e == dc->inorder) {
                 // encoded from all the recovered packets: i.e., still in-order, just ignore
-                printf("[Decoder] Receives repair packet coded across [%d, %d], in-order is %d, just ignore...\n", pkt->win_s, pkt->win_e, dc->inorder);
+                DEBUG_PRINT(("[Decoder] Receives repair packet coded across [%d, %d], in-order is %d, just ignore...\n", pkt->win_s, pkt->win_e, dc->inorder));
                 return 0;
             } else {
                 // it contains some missing source packets, activate decoder
-                printf("[Decoder] Receives repair packet coded across [%d, %d], but in-order is %d, activating decoder...\n", pkt->win_s, pkt->win_e, dc->inorder);
+                DEBUG_PRINT(("[Decoder] Receives repair packet coded across [%d, %d], but in-order is %d, activating decoder...\n", pkt->win_s, pkt->win_e, dc->inorder));
                 activate_decoder(dc, pkt);
             }
         }
@@ -121,7 +125,7 @@ int activate_decoder(struct decoder *dc, struct packet *pkt)
         dc->win_e = pkt->win_e;
         dc->dof = 0;
     }
-    printf("[Decoder] Decoder activated at time %d, decoding window [%d %d]\n", slot, dc->win_s, dc->win_e);
+    DEBUG_PRINT(("[Decoder] Decoder activated with decoding window [%d %d]\n", dc->win_s, dc->win_e));
     dc->active = 1;
     return 0;
 }
@@ -130,7 +134,7 @@ int process_packet(struct decoder *dc, struct packet *pkt)
 {
     int pktsize = dc->cp->pktsize;
     if (pkt->sourceid>=0) {
-        printf("[Decoder] Processing source packet %d, decoding window [%d %d]\n", pkt->sourceid, dc->win_s, dc->win_e);
+        DEBUG_PRINT(("[Decoder] Processing source packet %d, decoding window [%d %d]\n", pkt->sourceid, dc->win_s, dc->win_e));
         // A not-in-order source packet is received
         int index = pkt->sourceid - dc->win_s;
         dc->row[index] = calloc(1, sizeof(ROW_VEC));
@@ -142,7 +146,7 @@ int process_packet(struct decoder *dc, struct packet *pkt)
         dc->dof += 1;
         dc->win_e = pkt->sourceid;
     } else {
-        printf("[Decoder] Processing repair packet, encoding window [%d, %d]\n", pkt->win_s, pkt->win_e);
+        DEBUG_PRINT(("[Decoder] Processing repair packet, encoding window [%d, %d]\n", pkt->win_s, pkt->win_e));
         // eliminate those already in-order recovered packets from the repair packets
         for (int i=pkt->win_s; i<=dc->inorder; i++) {
             GF_ELEMENT co = pkt->coes[i-pkt->win_s];
@@ -152,8 +156,9 @@ int process_packet(struct decoder *dc, struct packet *pkt)
         // Packets of inorder+1, inorder+2, ...., pkt->win_e are missing
         dc->win_e = pkt->win_e;                                 // expand decoding window to what we have seen
         int width = dc->win_e - dc->win_s + 1;                  // current decoding window size
-        GF_ELEMENT *coes = calloc(width, sizeof(GF_ELEMENT));
-        memcpy(coes, &pkt->coes[dc->win_s-pkt->win_s], width);  // full-length EV
+        GF_ELEMENT *coes = &pkt->coes[dc->win_s-pkt->win_s];    // coefficients corresponding to in-order delivered packets are not useful
+        // GF_ELEMENT *coes = calloc(width, sizeof(GF_ELEMENT));
+        // memcpy(coes, &pkt->coes[dc->win_s-pkt->win_s], width);  // full-length EV
         // Process and save the EV to the appropriate row
         GF_ELEMENT quotient;
         for (int i=0; i<width; i++) {
@@ -207,7 +212,6 @@ int deactivate_decoder(struct decoder *dc)
         // save recovered packet
         int sourceid = win_s + i;
         dc->recovered[sourceid] = calloc(pktsize, sizeof(GF_ELEMENT));
-        deliver_time[sourceid] = slot;     // record in-order delivery time
         memcpy(dc->recovered[sourceid], dc->message[i], pktsize*sizeof(GF_ELEMENT));
         free(dc->message[i]);
         dc->message[i] = NULL;
@@ -216,11 +220,8 @@ int deactivate_decoder(struct decoder *dc)
         free(dc->row[i]);
         dc->row[i] = NULL;
     }
-    // for (i=win_s; i<=win_e; i++) {
-    //     printf("[Decoder] delay of source packet %d : %d\n", i, win_e-i+1);
-    // }
     // Deactivate
-    printf("[Decoder] Inactivating decoder at time %d, DW window [%d, %d] of width: %d active-duration: %d new in-order: %d\n", slot, dc->win_s, dc->win_e, width, slot-(sent_time[dc->win_s]+T_P), win_e);
+    DEBUG_PRINT(("[Decoder] Inactivating decoder with DW window [%d, %d] of width: %d new in-order: %d\n", dc->win_s, dc->win_e, width, win_e));
     dc->inorder = win_e;
     dc->dof = 0;
     dc->win_s = -1;

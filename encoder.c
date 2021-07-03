@@ -1,14 +1,6 @@
 #include "streamcodec.h"
+#include "galois.h"
 #define ENC_ALLOC   50
-
-extern int slot;
-extern int *sent_time;
-
-extern int irreg_range;
-extern int irreg_snum;
-extern int *irreg_spos;
-
-static int time_to_send_repair(struct encoder *ec);
 
 struct encoder *initialize_encoder(struct parameters *cp, unsigned char *buf, int nbytes)
 {
@@ -102,36 +94,6 @@ int enqueue_packet(struct encoder *ec, int sourceid, GF_ELEMENT *syms)
     return 0;
 }
 
-static int time_to_send_repair(struct encoder *ec)
-{
-    int nextsid = ec->nextsid;
-    if (irreg_range != 0) {
-        int sent = nextsid + ec->rcount;        // number of sent packets so far
-        if ( nextsid >= ec->snum) {
-            return 1;   // no more source packets to send
-        }
-        int match = 0;
-        for (int i=0; i<irreg_snum; i++) {
-            if (sent % irreg_range == irreg_spos[i]) {
-                match = 1;
-                break;
-            }
-        }
-        if (nextsid>0 && nextsid > ec->headsid && match==0) {
-            return 1;
-        }
-        return 0;
-    } else {
-        if ( nextsid >= ec->snum 
-            || (nextsid > 0 && nextsid > ec->headsid && ec->cp->repfreq < 1 && rand() % 1000 <= ec->cp->repfreq*1000)
-            || (nextsid > 0 && nextsid > ec->headsid && ec->cp->repfreq >=1 && (ec->count + 1) % ((int)ec->cp->repfreq+1) == 0) ) {
-            return 1;
-        } else {
-            return 0;
-        }
-    }
-
-}
 
 struct packet *output_repair_packet(struct encoder *ec)
 {
@@ -145,7 +107,7 @@ struct packet *output_repair_packet(struct encoder *ec)
     pkt->win_e = ec->nextsid - 1;
     ec->count  += 1;
     ec->rcount += 1;
-    printf("[Encoder] Transmit repair packet %d across window [%d, %d] at time %d\n", pkt->repairid, pkt->win_s, pkt->win_e, slot);
+    DEBUG_PRINT(("[Encoder] Transmit repair packet %d across window [%d, %d]\n", pkt->repairid, pkt->win_s, pkt->win_e));
     int width = pkt->win_e - pkt->win_s + 1;
     if (width > EWIN) {
         printf("[Warning] Encoding window size is too large\n");
@@ -176,70 +138,6 @@ struct packet *output_source_packet(struct encoder *ec)
     memcpy(pkt->syms, ec->srcpkt[pos], pktsize*sizeof(GF_ELEMENT));
     ec->count += 1;
     ec->nextsid += 1;
-    sent_time[pkt->sourceid] = slot;    // record transmit time of the source packet
-    printf("[Encoder] Transmit source packet %d at time %d\n", pkt->sourceid, slot);
-    return pkt;
-}
-
-struct packet *generate_packet(struct encoder *ec)
-{
-    if (ec->snum == 0 || ec->head == -1) {
-        // no packet has been queued or all previously queued packets have been flushed
-        return NULL;
-    }
-    /*
-    int pktsize = ec->cp->pktsize;
-    struct packet *pkt = calloc(1, sizeof(struct packet));
-    pkt->syms = calloc(pktsize, sizeof(GF_ELEMENT));
-    */
-    // Generate a packet
-    // Send a repair packet if 1) all the buffered packets have been sent in uncoded form once or 2) if we have sent 
-    // at least one uncoded packet and a coin-toss (or timer for regular insertation)determines to send a repair packet
-    int i, pos;
-    struct packet *pkt;
-    //if ( ec->nextsid >= ec->snum 
-    //     || (nextsid > 0 && nextsid > ec->headsid && ec->cp->repfreq < 1 && rand() % 1000 <= ec->cp->repfreq*1000)
-    //     || (nextsid > 0 && nextsid > ec->headsid && ec->cp->repfreq >=1 && (ec->count + 1) % ((int)ec->cp->repfreq+1) == 0) ) {
-    if (time_to_send_repair(ec)) {
-        /*
-        pkt->sourceid = -1;
-        pkt->repairid = ec->rcount;
-        pkt->win_s = ec->headsid;
-        pkt->win_e = ec->nextsid - 1;
-        ec->count  += 1;
-        ec->rcount += 1;
-        printf("[Encoder] Transmit repair packet %d across window [%d, %d] at time %d\n", pkt->repairid, pkt->win_s, pkt->win_e, slot);
-        int width = pkt->win_e - pkt->win_s + 1;
-        if (width > EWIN) {
-            printf("[Warning] Encoding window size is too large\n");
-        }
-        pkt->coes = calloc(width, sizeof(GF_ELEMENT));
-        for (i=0; i<width; i++) {
-            GF_ELEMENT co = mt19937_randint(ec->prng.mt, &ec->prng.mti) % (1 << ec->cp->gfpower);
-            pkt->coes[i] = co;
-            pos = (ec->head + i) % (ec->bufsize);
-            galois_multiply_add_region(pkt->syms, ec->srcpkt[pos], co, pktsize);
-        }
-        for (i=width; i<EWIN; i++) {
-            GF_ELEMENT co_skip = mt19937_randint(ec->prng.mt, &ec->prng.mti) % (1 << ec->cp->gfpower);
-        }
-        */
-        pkt = output_repair_packet(ec);
-    } else {
-        // send a source packet
-        pkt = output_source_packet(ec);
-        /*
-        pkt->sourceid = ec->nextsid;
-        pkt->repairid = -1;
-        
-        pos = (ec->head + (ec->nextsid - ec->headsid)) % (ec->bufsize);
-        memcpy(pkt->syms, ec->srcpkt[pos], pktsize*sizeof(GF_ELEMENT));
-        ec->count += 1;
-        ec->nextsid += 1;
-        sent_time[pkt->sourceid] = slot;    // record transmit time of the source packet
-        printf("[Encoder] Transmit source packet %d at time %d\n", pkt->sourceid, slot);
-        */
-    }
     return pkt;
 }
 
@@ -257,8 +155,8 @@ void flush_acked_packets(struct encoder *ec, int ack_sid)
             count += 1;
         }
     }
-    printf("[Encoder] Receive ACK i_ord=%d at time %d. Current encoding window: [%d %d]. Window width: %d\n", ack_sid, slot, ec->headsid, ec->nextsid-1, (ec->nextsid-ec->headsid));
-    printf("[Encoder] %d source packets up to no. %d are flushed from sending queue at time %d\n", count, ack_sid, slot);
+    DEBUG_PRINT(("[Encoder] Receive ACK i_ord=%d. Current encoding window: [%d %d]. Window width: %d\n", ack_sid, ec->headsid, ec->nextsid-1, (ec->nextsid-ec->headsid)));
+    DEBUG_PRINT(("[Encoder] %d source packets up to no. %d are flushed from sending queue\n", count, ack_sid));
     if (ack_sid == ec->tailsid) {
         // all the buffered packets are flushed
         ec->head = -1;

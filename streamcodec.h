@@ -1,5 +1,14 @@
+#ifndef STREAMCODEC_H
+#define STREAMCODEC_H
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#ifdef DEBUG
+# define DEBUG_PRINT(x) printf x
+#else
+# define DEBUG_PRINT(x) do {} while (0)
+#endif
+
 #ifndef GALOIS
 #define GALOIS
 typedef unsigned char GF_ELEMENT;
@@ -58,6 +67,7 @@ typedef struct row_vector {
 
 struct decoder {
     struct parameters *cp;           // code parameter    
+    struct packet *pbuf;            // a single packet buffer for deserialize
     int         active;             // whether the decoder is active
     int         inorder;            // index of the last in-order received packet
     int         win_s;              // start of decoding window
@@ -73,7 +83,6 @@ struct decoder {
 // encoder functions
 struct encoder *initialize_encoder(struct parameters *cp, unsigned char *buf, int nbytes);
 int enqueue_packet(struct encoder *ec, int sourceid, GF_ELEMENT *syms);
-struct packet *generate_packet(struct encoder *ec);
 struct packet *output_source_packet(struct encoder *ec);
 struct packet *output_repair_packet(struct encoder *ec);
 void flush_acked_packets(struct encoder *ec, int ack_sid);
@@ -84,6 +93,7 @@ unsigned char *serialize_packet(struct encoder *ec, struct packet *pkt);
 // decoder functions
 struct decoder *initialize_decoder(struct parameters *cp);
 int activate_decoder(struct decoder *dc, struct packet *pkt);
+int deactivate_decoder(struct decoder *dc);
 int receive_packet(struct decoder *dc, struct packet *pkt);
 int process_packet(struct decoder *dc, struct packet *pkt);
 struct packet *deserialize_packet(struct decoder *dc, unsigned char *pktstr);
@@ -91,3 +101,5 @@ struct packet *deserialize_packet(struct decoder *dc, unsigned char *pktstr);
 // pseudo-random number generator
 void mt19937_init(unsigned long s, unsigned long *mt);
 unsigned long mt19937_randint(unsigned long *mt, int *mti);
+
+#endif  // STREAMCODEC_H
