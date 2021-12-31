@@ -1,8 +1,5 @@
 /*-------------------- galois.h ---------------------------------
  * Internal header file of Galois field implementation. 
- *
- * Targeting on byte-based computation systems, we only implement 
- * GF(2^8). GF(2) is naturally included.
  *--------------------------------------------------------------*/
 #ifndef GALOIS_H
 #define GALOIS_H

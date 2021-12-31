@@ -17,7 +17,7 @@ ifeq ($(UNAME), Linux)
 	HAS_SSSE3 := $(shell grep -i ssse3 /proc/cpuinfo)
 	HAS_AVX2  := $(shell grep -i avx2 /proc/cpuinfo)
 endif
-CFLAGS0 = -std=c99 -O3 -lm
+CFLAGS0 = -std=c99 -g -lm -DDEBUG
 # Add SIMD compiler options
 ifneq ($(HAS_SSSE3),)
 	CFLAGS1 = -mssse3 -DINTEL_SSSE3

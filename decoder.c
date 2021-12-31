@@ -1,8 +1,8 @@
 #include "streamcodec.h"
 #include "galois.h"
 #include <assert.h>
-#define DEC_ALLOC   100000
-#define WIN_ALLOC   100000
+#define DEC_ALLOC   1000000
+#define WIN_ALLOC   1000000
 
 struct decoder *initialize_decoder(struct parameters *cp)
 {
@@ -31,9 +31,6 @@ struct decoder *initialize_decoder(struct parameters *cp)
 
 struct packet *deserialize_packet(struct decoder *dc, unsigned char *pktstr)
 {
-    // int pktsize = dc->cp->pktsize;
-    // struct packet *pkt = calloc(1, sizeof(struct packet));
-    // pkt->syms = calloc(pktsize, sizeof(GF_ELEMENT));
     struct packet *pkt = dc->pbuf;
     memcpy(&pkt->sourceid, pktstr, sizeof(int));
     memcpy(&pkt->repairid, pktstr+sizeof(int), sizeof(int));
@@ -42,6 +39,11 @@ struct packet *deserialize_packet(struct decoder *dc, unsigned char *pktstr)
     memcpy(pkt->syms, pktstr+sizeof(int)*4, dc->cp->pktsize);
     if (pkt->sourceid == -1) {
         int curr_rep = pkt->repairid;
+        if (curr_rep < dc->prev_rep) {
+            // If repair packet arrive out of order, synchronizing coefficients using PRNG
+            // is difficult, should skip these packets
+            return NULL;
+        }
         int i, j;
         for (i=dc->prev_rep+1; i<curr_rep; i++) {
             //skip coding coefficients of lost repair packets
@@ -76,6 +78,10 @@ int receive_packet(struct decoder *dc, struct packet *pkt)
         // Decoder is inactive, in-order receiving
         if (pkt->sourceid >= 0) {
             // A source packet received, check whether it's consistent
+            if (pkt->sourceid <= dc->inorder) {
+                DEBUG_PRINT(("[Decoder] Receive out-dated source packet %d current inorder: %d\n", pkt->sourceid, dc->inorder));
+                return 0;
+            }
             if (pkt->sourceid == dc->inorder + 1) {
                 // in-order delievery, store it
                 dc->recovered[pkt->sourceid] = calloc(pktsize, sizeof(GF_ELEMENT));
@@ -88,10 +94,11 @@ int receive_packet(struct decoder *dc, struct packet *pkt)
                 // missing source packet
                 DEBUG_PRINT(("[Decoder] Receives source packet %d but in-order is %d, activating decoder...\n", pkt->sourceid, dc->inorder));
                 activate_decoder(dc, pkt);
+                return 0;
             }
         } else {
             // A repair packet received 
-            if (pkt->win_e == dc->inorder) {
+            if (pkt->win_e <= dc->inorder) {
                 // encoded from all the recovered packets: i.e., still in-order, just ignore
                 DEBUG_PRINT(("[Decoder] Receives repair packet coded across [%d, %d], in-order is %d, just ignore...\n", pkt->win_s, pkt->win_e, dc->inorder));
                 return 0;
@@ -99,6 +106,7 @@ int receive_packet(struct decoder *dc, struct packet *pkt)
                 // it contains some missing source packets, activate decoder
                 DEBUG_PRINT(("[Decoder] Receives repair packet coded across [%d, %d], but in-order is %d, activating decoder...\n", pkt->win_s, pkt->win_e, dc->inorder));
                 activate_decoder(dc, pkt);
+                return 0;
             }
         }
     }
@@ -119,13 +127,46 @@ int activate_decoder(struct decoder *dc, struct packet *pkt)
         // Packets of inorder+1, inorder+2,..., sourceid-1 are missing
         dc->win_s = dc->inorder + 1;
         dc->win_e = pkt->sourceid;
-        dc->dof = 0;
+        // save the packet to A*S=C
+        int index = pkt->sourceid - dc->win_s;
+        dc->row[index] = calloc(1, sizeof(ROW_VEC));
+        dc->row[index]->len = 1;
+        dc->row[index]->elem = calloc(dc->row[index]->len, sizeof(GF_ELEMENT));
+        dc->row[index]->elem[0] = 1;
+        dc->message[index] = calloc(pktsize, sizeof(GF_ELEMENT));
+        memcpy(dc->message[index], pkt->syms, pktsize * sizeof(GF_ELEMENT));
+        dc->dof = 1;
+        DEBUG_PRINT(("[Decoder] Decoder activated by source packet %d \n", pkt->sourceid));
     } else {
         dc->win_s = dc->inorder + 1;
         dc->win_e = pkt->win_e;
         dc->dof = 0;
+        // process the repair packet to eliminate those already in-order recovered packets from the packet
+        // and then save to A*S=C
+        for (int i=pkt->win_s; i<=dc->inorder; i++) {
+            GF_ELEMENT co = pkt->coes[i-pkt->win_s];
+            galois_multiply_add_region(pkt->syms, dc->recovered[i], co, pktsize);
+            pkt->coes[i-pkt->win_s] = 0;
+        }
+        int offset = dc->win_s - pkt->win_s;
+        GF_ELEMENT *coes = &pkt->coes[offset];    // coefficients corresponding to the rest of the cofficients
+        int dww = dc->win_e - dc->win_s + 1;
+        for (int i=0; i<dww; i++) {
+            if (coes[i] != 0) {
+                // save the coefficient vector and the corresponding message row to A*S=C
+                dc->row[i] = calloc(1, sizeof(ROW_VEC));
+                dc->row[i]->len = dww - i;
+                dc->row[i]->elem = calloc(dc->row[i]->len, sizeof(GF_ELEMENT));
+                memcpy(dc->row[i]->elem, &coes[i], dc->row[i]->len*sizeof(GF_ELEMENT));
+                dc->message[i] = calloc(pktsize, sizeof(GF_ELEMENT));
+                memcpy(dc->message[i], pkt->syms, pktsize * sizeof(GF_ELEMENT));
+                dc->dof = 1;
+                break;
+            }
+        }
+        DEBUG_PRINT(("[Decoder] Decoder activated by repair packet %d with encoding window [ %d %d ] \n", pkt->repairid, pkt->win_s, pkt->win_e));
     }
-    DEBUG_PRINT(("[Decoder] Decoder activated with decoding window [%d %d]\n", dc->win_s, dc->win_e));
+    DEBUG_PRINT(("[Decoder] Decoder activated with decoding window [%d %d], DoF: %d\n", dc->win_s, dc->win_e, dc->dof));
     dc->active = 1;
     return 0;
 }
@@ -133,9 +174,12 @@ int activate_decoder(struct decoder *dc, struct packet *pkt)
 int process_packet(struct decoder *dc, struct packet *pkt)
 {
     int pktsize = dc->cp->pktsize;
-    if (pkt->sourceid>=0) {
-        DEBUG_PRINT(("[Decoder] Processing source packet %d, decoding window [%d %d]\n", pkt->sourceid, dc->win_s, dc->win_e));
-        // A not-in-order source packet is received
+    if ((pkt->sourceid >= 0 && pkt->sourceid < dc->win_s) || (pkt->repairid>=0 && pkt->win_e < dc->win_s)) {
+        // Out-dated packets are discarded directly
+        return 0;
+    }
+    if (pkt->sourceid >= 0 && pkt->sourceid > dc->win_e) {
+        // A newer source packet beyond the current decoding window is received
         int index = pkt->sourceid - dc->win_s;
         dc->row[index] = calloc(1, sizeof(ROW_VEC));
         dc->row[index]->len = 1;
@@ -144,41 +188,80 @@ int process_packet(struct decoder *dc, struct packet *pkt)
         dc->message[index] = calloc(pktsize, sizeof(GF_ELEMENT));
         memcpy(dc->message[index], pkt->syms, pktsize * sizeof(GF_ELEMENT));
         dc->dof += 1;
-        dc->win_e = pkt->sourceid;
-    } else {
-        DEBUG_PRINT(("[Decoder] Processing repair packet, encoding window [%d, %d]\n", pkt->win_s, pkt->win_e));
-        // eliminate those already in-order recovered packets from the repair packets
+        dc->win_e = pkt->sourceid;  // expand decoding window
+        DEBUG_PRINT(("[Decoder] Processed source packet %d , decoding window [ %d %d ], DoF: %d\n", pkt->sourceid, dc->win_s, dc->win_e, dc->dof));
+        return 0;
+    }
+    // An out-of-order source packet within the decoding window or a repair packet arrives
+    if (pkt->repairid>=0) {
+        // first of all, eliminate those already in-order recovered packets from the repair packets
         for (int i=pkt->win_s; i<=dc->inorder; i++) {
             GF_ELEMENT co = pkt->coes[i-pkt->win_s];
             galois_multiply_add_region(pkt->syms, dc->recovered[i], co, pktsize);
             pkt->coes[i-pkt->win_s] = 0;
         }
-        // Packets of inorder+1, inorder+2, ...., pkt->win_e are missing
-        dc->win_e = pkt->win_e;                                 // expand decoding window to what we have seen
-        int width = dc->win_e - dc->win_s + 1;                  // current decoding window size
-        GF_ELEMENT *coes = &pkt->coes[dc->win_s-pkt->win_s];    // coefficients corresponding to in-order delivered packets are not useful
-        // GF_ELEMENT *coes = calloc(width, sizeof(GF_ELEMENT));
-        // memcpy(coes, &pkt->coes[dc->win_s-pkt->win_s], width);  // full-length EV
-        // Process and save the EV to the appropriate row
-        GF_ELEMENT quotient;
-        for (int i=0; i<width; i++) {
-            if (coes[i] != 0) {
-                if (dc->row[i] != NULL) {
-                    quotient = galois_divide(coes[i], dc->row[i]->elem[0]);
-                    galois_multiply_add_region(&coes[i], dc->row[i]->elem, quotient, dc->row[i]->len);
-                    galois_multiply_add_region(pkt->syms, dc->message[i], quotient, pktsize);
-                } else {
-                    dc->row[i] = calloc(1, sizeof(ROW_VEC));
-                    dc->row[i]->len = width - i;
-                    dc->row[i]->elem = calloc(dc->row[i]->len, sizeof(GF_ELEMENT));
-                    memcpy(dc->row[i]->elem, &coes[i], dc->row[i]->len);
-                    dc->message[i] = calloc(pktsize, sizeof(GF_ELEMENT));
-                    memcpy(dc->message[i], pkt->syms, pktsize * sizeof(GF_ELEMENT));
-                    dc->dof += 1;
-                    break;
-                }
+        if (pkt->win_e >= dc->win_e) {
+            dc->win_e = pkt->win_e;  // expand decoding window if the repair packet covers newer source packets beyond the current window
+        }
+    }
+    int dww = dc->win_e - dc->win_s + 1;
+    // Find the index of the column from which the received source or repair packet gonna affect
+    // as well as the offset of the coefficients in repair's encoding vector having the effect
+    //      dc->win_s         dc->win_e
+    //         |                 |
+    //         v                 v
+    // ........[.................]........
+    // ...xxxxxxxxxxxx....
+    // .............xxxxxxxxx.............
+    // .................xxxxxxxxxx........
+    //    ^         ^   ^
+    //    |         |   |
+    //   (a)       (b) (c)
+    // Cases of repair packet's coeffcients (xxx's):
+    int index, offset;
+    if (pkt->sourceid>=0) {
+        index = pkt->sourceid - dc->win_s;
+        DEBUG_PRINT(("[Decoder] Processing \"lost\" source packet %d ...\n", pkt->sourceid));
+    } else {
+        index = pkt->win_s > dc->win_s ? (pkt->win_s - dc->win_s) : 0;
+        offset = pkt->win_s > dc->win_s ? 0 : (dc->win_s - pkt->win_s);
+    }
+    // The effective encoding vector of the receive packet,length: (dww - index)
+    int width = dww - index;
+    GF_ELEMENT *coes = calloc(width, sizeof(GF_ELEMENT));
+    if (pkt->sourceid>=0) {
+        coes[0] = 1;
+    } else {
+        int ntocopy = (pkt->win_e - pkt->win_s + 1) - offset;
+        memcpy(coes, &pkt->coes[offset], ntocopy * sizeof(GF_ELEMENT));
+    }
+    // Process the effective EV to the appropriate row
+    GF_ELEMENT quotient;
+    int filled = -1;
+    for (int i=0; i<width; i++) {
+        if (coes[i] != 0) {
+            if (dc->row[i+index] != NULL) {
+                quotient = galois_divide(coes[i], dc->row[i+index]->elem[0]);
+                galois_multiply_add_region(&coes[i], dc->row[i+index]->elem, quotient, dc->row[i+index]->len);
+                galois_multiply_add_region(pkt->syms, dc->message[i+index], quotient, pktsize);
+            } else {
+                dc->row[i+index] = calloc(1, sizeof(ROW_VEC));
+                dc->row[i+index]->len = width - i;
+                dc->row[i+index]->elem = calloc(dc->row[i+index]->len, sizeof(GF_ELEMENT));
+                memcpy(dc->row[i+index]->elem, &coes[i], dc->row[i+index]->len * sizeof(GF_ELEMENT));
+                dc->message[i+index] = calloc(pktsize, sizeof(GF_ELEMENT));
+                memcpy(dc->message[i+index], pkt->syms, pktsize * sizeof(GF_ELEMENT));
+                dc->dof += 1;
+                filled = i+index;
+                break;
             }
         }
+    }
+    free(coes);
+    if (pkt->sourceid >= 0) {
+        DEBUG_PRINT(("[Decoder] Processed source packet %d , current decoding window: [ %d %d ], filled: %d DoF: %d\n", pkt->sourceid, dc->win_s, dc->win_e, filled+dc->win_s, dc->dof));
+    } else {
+        DEBUG_PRINT(("[Decoder] Processed repair packet %d , encoding window [%d, %d], current decoding window: [ %d %d ], filled: %d DoF: %d\n", pkt->repairid, pkt->win_s, pkt->win_e, dc->win_s, dc->win_e, filled+dc->win_s, dc->dof));
     }
     return 0;
 }

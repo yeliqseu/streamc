@@ -39,7 +39,8 @@ struct encoder *initialize_encoder(struct parameters *cp, unsigned char *buf, in
     }
     // Initialize random number generator for coding coefficients
     ec->prng.mti = N+1;
-    ec->cp->seed = rand();      // use random number of libc to seed mt19937
+    // ec->cp->seed = rand();      // use random number of libc to seed mt19937
+    ec->cp->seed = 0;      // use 0 to seed local mt19937 PRNG is okay
     mt19937_init(ec->cp->seed, ec->prng.mt);
     // Construct finite field
     constructField(cp->gfpower);

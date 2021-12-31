@@ -71,6 +71,7 @@ int main(int argc, char *argv[])
     struct timeval tv;
     gettimeofday(&tv, NULL);
     srand(tv.tv_sec * 1000 + tv.tv_usec / 1000); // seed use microsec
+    //printf("srand seed: %ld\n", tv.tv_sec * 1000 + tv.tv_usec / 1000);
     // generate random data
     int datasize = snum * cp.pktsize;
     unsigned char *buf = malloc(datasize);
@@ -129,12 +130,25 @@ int main(int argc, char *argv[])
             }
         }
         free_packet(pkt);
+        // With 5% probability, incur random re-order of in-flight packets to simulate out-of-order arrival
+        if (slot >= T_P + 5 && rand() % 100 < 5) {
+            int ro_pos1 = rand() % (T_P+1);
+            int ro_pos2 = rand() % (T_P+1);
+            unsigned char *tmp = queue[ro_pos1];
+            queue[ro_pos1] = queue[ro_pos2];
+            queue[ro_pos2] = tmp;
+            printf("[Channel] randomly incur re-ordering of packets at time %d of position %d and %d\n", slot, ro_pos1, ro_pos2);
+        }
         // Delayed reception
         int pos2 = (slot-T_P) % (T_P+1);    // which packet in the queue to be received at the current slot (due to propagation delay)
         if (slot >= T_P && queue[pos2] != NULL) {
             printf("[Channel] Packet queued at pos %d of the buffer is processed at time %d by the decoder\n", pos2, slot);
             struct packet *rpkt = deserialize_packet(dc, queue[pos2]);
-            receive_packet(dc, rpkt);
+            if (rpkt != NULL) {
+                receive_packet(dc, rpkt);
+            }
+            free(queue[pos2]);
+            queue[pos2] = NULL;
         }
         // simulating: flush sending queue using decoder's feedback
         // for simplicity, we assume lossless feedback

@@ -42,9 +42,7 @@
 */
 
 /*
- * This PRNG is included to be used by
- *   1) grouping of generations in RAND codes
- *   2) precoding coefficients of GF(256) precodes
+ * This PRNG is used for generating/retrieving coding coefficients
  */
 
 #include <stdio.h>
