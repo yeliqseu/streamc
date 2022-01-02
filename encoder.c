@@ -2,6 +2,10 @@
 #include "galois.h"
 #define ENC_ALLOC   50
 
+// pseudo-random number generator
+extern void mt19937_seed(unsigned long s, unsigned long *mt);
+extern unsigned long mt19937_randint(unsigned long *mt, int *mti);
+
 struct encoder *initialize_encoder(struct parameters *cp, unsigned char *buf, int nbytes)
 {
     struct encoder *ec = calloc(1, sizeof(struct encoder));
@@ -37,11 +41,6 @@ struct encoder *initialize_encoder(struct parameters *cp, unsigned char *buf, in
         ec->headsid = 0;
         ec->tailsid = ec->snum - 1;
     }
-    // Initialize random number generator for coding coefficients
-    ec->prng.mti = N+1;
-    // ec->cp->seed = rand();      // use random number of libc to seed mt19937
-    ec->cp->seed = 0;      // use 0 to seed local mt19937 PRNG is okay
-    mt19937_init(ec->cp->seed, ec->prng.mt);
     // Construct finite field
     constructField(cp->gfpower);
     return ec;
@@ -114,14 +113,14 @@ struct packet *output_repair_packet(struct encoder *ec)
         printf("[Warning] Encoding window size is too large\n");
     }
     pkt->coes = calloc(width, sizeof(GF_ELEMENT));
+    // init prng using repairid as the seed
+    ec->prng.mti = N;
+    mt19937_seed(pkt->repairid*EWIN, ec->prng.mt);
     for (i=0; i<width; i++) {
         GF_ELEMENT co = mt19937_randint(ec->prng.mt, &ec->prng.mti) % (1 << ec->cp->gfpower);
         pkt->coes[i] = co;
         pos = (ec->head + i) % (ec->bufsize);
         galois_multiply_add_region(pkt->syms, ec->srcpkt[pos], co, pktsize);
-    }
-    for (i=width; i<EWIN; i++) {
-        GF_ELEMENT co_skip = mt19937_randint(ec->prng.mt, &ec->prng.mti) % (1 << ec->cp->gfpower);
     }
     return pkt;
 }

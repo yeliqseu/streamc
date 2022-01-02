@@ -14,7 +14,7 @@
 typedef unsigned char GF_ELEMENT;
 #endif
 #define N       624                 // used by mt-19937 PRNG
-#define EWIN    100000              // largest supported encoding window (for coefficient synchronization)
+#define EWIN    100                 // "encoding window" for seeding PRNG (for coefficient synchronization)
 
 #define ALIGN(a, b) ((a) % (b) == 0 ? (a)/(b) : (a)/(b) + 1)
 
@@ -97,9 +97,5 @@ int deactivate_decoder(struct decoder *dc);
 int receive_packet(struct decoder *dc, struct packet *pkt);
 int process_packet(struct decoder *dc, struct packet *pkt);
 struct packet *deserialize_packet(struct decoder *dc, unsigned char *pktstr);
-
-// pseudo-random number generator
-void mt19937_init(unsigned long s, unsigned long *mt);
-unsigned long mt19937_randint(unsigned long *mt, int *mti);
 
 #endif  // STREAMCODEC_H

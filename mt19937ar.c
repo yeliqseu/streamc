@@ -42,10 +42,11 @@
 */
 
 /*
- * This PRNG is used for generating/retrieving coding coefficients
- */
-
-#include <stdio.h>
+ This code is modified from the original mt19937ar.c of the above link.
+ The PRNG is used for generating/retrieving coding coefficients. When an encoding
+ vector is needed, the PRNG is seeded using the repair packet's id (see encoder.c).
+ Using the same id to seed the PRNG at the decoder side (decoder.c), the vector can be retrieved.
+*/
 
 /* Period parameters */  
 #define N 624
@@ -54,11 +55,8 @@
 #define UPPER_MASK 0x80000000UL /* most significant w-r bits */
 #define LOWER_MASK 0x7fffffffUL /* least significant r bits */
 
-// static unsigned long mt[N]; /* the array for the state vector  */
-// static int mti=N+1; /* mti==N+1 means mt[N] is not initialized */
-
 /* initializes mt[N] with a seed */
-void mt19937_init(unsigned long s, unsigned long *mt)
+void mt19937_seed(unsigned long s, unsigned long *mt)
 {
     mt[0]= s & 0xffffffffUL;
     for (int mti=1; mti<N; mti++) {
@@ -81,9 +79,6 @@ unsigned long mt19937_randint(unsigned long *mt, int *mti)
 
     if (*mti >= N) { /* generate N words at one time */
         int kk;
-
-        if (*mti == N+1)   /* if init_genrand() has not been called, */
-            mt19937_init(5489UL, mt); /* a default initial seed is used */
 
         for (kk=0;kk<N-M;kk++) {
             y = (mt[kk]&UPPER_MASK)|(mt[kk+1]&LOWER_MASK);

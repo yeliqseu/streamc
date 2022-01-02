@@ -4,6 +4,10 @@
 #define DEC_ALLOC   1000000
 #define WIN_ALLOC   1000000
 
+// pseudo-random number generator
+extern void mt19937_seed(unsigned long s, unsigned long *mt);
+extern unsigned long mt19937_randint(unsigned long *mt, int *mti);
+
 struct decoder *initialize_decoder(struct parameters *cp)
 {
     struct decoder *dc = calloc(1, sizeof(struct decoder));
@@ -17,9 +21,6 @@ struct decoder *initialize_decoder(struct parameters *cp)
     dc->message = calloc(WIN_ALLOC, sizeof(GF_ELEMENT*));
     dc->recovered = calloc(DEC_ALLOC, sizeof(GF_ELEMENT*));
     dc->prev_rep = -1;
-    DEBUG_PRINT(("[Decoder] Coding coefficient PRNG seed: %d\n", cp->seed));
-    dc->prng.mti = N + 1;
-    mt19937_init(cp->seed, dc->prng.mt);
     constructField(cp->gfpower);
     // allocate a single-packet buffer for deserialize packet
     int pktsize = dc->cp->pktsize;
@@ -39,30 +40,19 @@ struct packet *deserialize_packet(struct decoder *dc, unsigned char *pktstr)
     memcpy(pkt->syms, pktstr+sizeof(int)*4, dc->cp->pktsize);
     if (pkt->sourceid == -1) {
         int curr_rep = pkt->repairid;
-        if (curr_rep < dc->prev_rep) {
-            // If repair packet arrive out of order, synchronizing coefficients using PRNG
-            // is difficult, should skip these packets
-            return NULL;
-        }
         int i, j;
-        for (i=dc->prev_rep+1; i<curr_rep; i++) {
-            //skip coding coefficients of lost repair packets
-            for (j=0; j<EWIN; j++) {
-                GF_ELEMENT co_skip = mt19937_randint(dc->prng.mt, &dc->prng.mti) % (1 << dc->cp->gfpower);
-            }
-        }
         // recover coding coefficients using PRNG
         int width = pkt->win_e - pkt->win_s + 1;
         if (pkt->coes != NULL) {
             free(pkt->coes);
         }
         pkt->coes = calloc(width, sizeof(GF_ELEMENT));
+        // init prng using packet's repairid to synchronize encoding vector
+        dc->prng.mti = N;
+        mt19937_seed(pkt->repairid*EWIN, dc->prng.mt);
         for (j=0; j<width; j++) {
             GF_ELEMENT co = mt19937_randint(dc->prng.mt, &dc->prng.mti) % (1 << dc->cp->gfpower);
             pkt->coes[j] = co;
-        }
-        for (j=width; j<EWIN; j++) {
-            GF_ELEMENT co_skip = mt19937_randint(dc->prng.mt, &dc->prng.mti) % (1 << dc->cp->gfpower);
         }
     }
     return pkt;

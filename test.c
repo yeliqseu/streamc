@@ -144,9 +144,7 @@ int main(int argc, char *argv[])
         if (slot >= T_P && queue[pos2] != NULL) {
             printf("[Channel] Packet queued at pos %d of the buffer is processed at time %d by the decoder\n", pos2, slot);
             struct packet *rpkt = deserialize_packet(dc, queue[pos2]);
-            if (rpkt != NULL) {
-                receive_packet(dc, rpkt);
-            }
+            receive_packet(dc, rpkt);
             free(queue[pos2]);
             queue[pos2] = NULL;
         }
