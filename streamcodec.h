@@ -15,6 +15,7 @@ typedef unsigned char GF_ELEMENT;
 #endif
 #define N       624                 // used by mt-19937 PRNG
 #define EWIN    100                 // "encoding window" for seeding PRNG (for coefficient synchronization)
+#define DEC_ALLOC   10000           // buffer space allocated at decoder for recovered packets
 
 #define ALIGN(a, b) ((a) % (b) == 0 ? (a)/(b) : (a)/(b) + 1)
 
@@ -26,7 +27,6 @@ typedef struct mt19937_rng {
 struct parameters {
     int     gfpower;                // n of GF(2^n)
     int     pktsize;                // number of bytes per packet
-    //int     repintvl;               // interval of repair packets
     double  repfreq;                // frequency (probability) of sending repair packet
     int     seed;                   // seed for random coding coefficients
 };
@@ -89,6 +89,8 @@ void flush_acked_packets(struct encoder *ec, int ack_sid);
 void visualize_buffer(struct encoder *ec);
 void free_packet(struct packet *pkt);
 unsigned char *serialize_packet(struct encoder *ec, struct packet *pkt);
+void free_serialized_packet(unsigned char *pktstr);
+void free_encoder(struct encoder *ec);
 
 // decoder functions
 struct decoder *initialize_decoder(struct parameters *cp);
@@ -97,5 +99,6 @@ int deactivate_decoder(struct decoder *dc);
 int receive_packet(struct decoder *dc, struct packet *pkt);
 int process_packet(struct decoder *dc, struct packet *pkt);
 struct packet *deserialize_packet(struct decoder *dc, unsigned char *pktstr);
+void free_decoder(struct decoder *dc);
 
 #endif  // STREAMCODEC_H

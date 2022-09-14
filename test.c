@@ -24,7 +24,7 @@ int *irreg_spos = NULL;
 
 char usage[] = "Usage: ./programName snum arrival repfreq epsilon Tp irange pos1 pos2 ... \n\
                        snum     - maximum number of source packets to transmit\n\
-                       arrival  - Bernoulli arrival rate at the sending queue, value: [0, 1]\n\
+                       arrival  - Bernoulli arrival rate at the sending queue, value: [0, 1)\n\
                                   0 - all source packets available before time 0\n\
                        repfreq  - frequency of inserting repair packets\n\
                                   random insertion of repair packets if repfreq < 1\n\
@@ -123,7 +123,7 @@ int main(int argc, char *argv[])
             } else {
                 printf("[Channel] Repair packet %d erased in channel at time %d\n", pkt->repairid, slot);
             }
-            free(pktstr);
+            free_serialized_packet(pktstr);
             if (queue[pos1] != NULL) {
                 free(queue[pos1]);
                 queue[pos1] = NULL;
@@ -131,6 +131,7 @@ int main(int argc, char *argv[])
         }
         free_packet(pkt);
         // With 5% probability, incur random re-order of in-flight packets to simulate out-of-order arrival
+        /*
         if (slot >= T_P + 5 && rand() % 100 < 5) {
             int ro_pos1 = rand() % (T_P+1);
             int ro_pos2 = rand() % (T_P+1);
@@ -139,6 +140,7 @@ int main(int argc, char *argv[])
             queue[ro_pos2] = tmp;
             printf("[Channel] randomly incur re-ordering of packets at time %d of position %d and %d\n", slot, ro_pos1, ro_pos2);
         }
+        */
         // Delayed reception
         int pos2 = (slot-T_P) % (T_P+1);    // which packet in the queue to be received at the current slot (due to propagation delay)
         if (slot >= T_P && queue[pos2] != NULL) {
@@ -162,8 +164,17 @@ int main(int argc, char *argv[])
     }
 
     int correct = 1;
+    /*
     for (int i=0; i<ec->snum; i++) {
         if (memcmp(buf+i*cp.pktsize, dc->recovered[i], cp.pktsize) !=0) {
+            correct = 0;
+            printf("[Warning] recovered %d is NOT identical to original.\n", i);
+        }
+    }
+    */
+    int ncheck = ec->snum > DEC_ALLOC ? DEC_ALLOC : ec->snum;
+    for (int i=ec->snum-1; i>ec->snum-ncheck; i--) {
+        if (memcmp(buf+i*cp.pktsize, dc->recovered[i%DEC_ALLOC], cp.pktsize) !=0) {
             correct = 0;
             printf("[Warning] recovered %d is NOT identical to original.\n", i);
         }
@@ -172,6 +183,10 @@ int main(int argc, char *argv[])
         printf("[Summary] All source packets are recovered correctly\n");
         printf("[Summary] snum: %d repfreq: %.3f erasure: %.3f nuses: %d \n", snum, cp.repfreq, pe, nuse);
     }
+    printf("[Summary] Free encoder...\n");
+    free_encoder(ec);
+    printf("[Summary] Free decoder...\n");
+    free_decoder(dc);
 }
 
 struct packet *generate_packet(struct encoder *ec)

@@ -1,8 +1,7 @@
 #include "streamcodec.h"
 #include "galois.h"
 #include <assert.h>
-#define DEC_ALLOC   1000000
-#define WIN_ALLOC   1000000
+#define WIN_ALLOC   10000
 
 // pseudo-random number generator
 extern void mt19937_seed(unsigned long s, unsigned long *mt);
@@ -22,7 +21,7 @@ struct decoder *initialize_decoder(struct parameters *cp)
     dc->recovered = calloc(DEC_ALLOC, sizeof(GF_ELEMENT*));
     dc->prev_rep = -1;
     constructField(cp->gfpower);
-    // allocate a single-packet buffer for deserialize packet
+    // allocate a single-packet buffer for packet desearilization
     int pktsize = dc->cp->pktsize;
     dc->pbuf = calloc(1, sizeof(struct packet));
     dc->pbuf->coes = NULL;
@@ -45,6 +44,7 @@ struct packet *deserialize_packet(struct decoder *dc, unsigned char *pktstr)
         int width = pkt->win_e - pkt->win_s + 1;
         if (pkt->coes != NULL) {
             free(pkt->coes);
+            pkt->coes = NULL;
         }
         pkt->coes = calloc(width, sizeof(GF_ELEMENT));
         // init prng using packet's repairid to synchronize encoding vector
@@ -74,8 +74,12 @@ int receive_packet(struct decoder *dc, struct packet *pkt)
             }
             if (pkt->sourceid == dc->inorder + 1) {
                 // in-order delievery, store it
-                dc->recovered[pkt->sourceid] = calloc(pktsize, sizeof(GF_ELEMENT));
-                memcpy(dc->recovered[pkt->sourceid], pkt->syms, pktsize*sizeof(GF_ELEMENT));
+                if (dc->recovered[pkt->sourceid % DEC_ALLOC] != NULL) {
+                    memset(dc->recovered[pkt->sourceid % DEC_ALLOC], 0, pktsize*sizeof(GF_ELEMENT));     // overwrite (i.e., "flush") previous older source packets
+                } else {
+                    dc->recovered[pkt->sourceid % DEC_ALLOC] = calloc(pktsize, sizeof(GF_ELEMENT));
+                }
+                memcpy(dc->recovered[pkt->sourceid % DEC_ALLOC], pkt->syms, pktsize*sizeof(GF_ELEMENT));
                 DEBUG_PRINT(("[Decoder] Receive in-order source packet %d \n", pkt->sourceid));
                 // printf("[Decoder] delay of source packet %d : 0 \n", pkt->sourceid);
                 dc->inorder += 1;
@@ -99,14 +103,16 @@ int receive_packet(struct decoder *dc, struct packet *pkt)
                 return 0;
             }
         }
+    } else {
+        // Decoder is active, i.e., in-order reception halted, so perform on-the-fly GE
+        process_packet(dc, pkt);
+        if (dc->dof == (dc->win_e - dc->win_s + 1)) {
+            // ready to recover the whole window
+            deactivate_decoder(dc);
+        }
+        return 0;
     }
-    // Decoder is active, i.e., in-order reception halted, so perform on-the-fly GE
-    process_packet(dc, pkt);
-    if (dc->dof == (dc->win_e - dc->win_s + 1)) {
-        // ready to recover the whole window
-        deactivate_decoder(dc);
-    }
-    return 0; 
+    return 0;
 }
 
 int activate_decoder(struct decoder *dc, struct packet *pkt)
@@ -119,6 +125,7 @@ int activate_decoder(struct decoder *dc, struct packet *pkt)
         dc->win_e = pkt->sourceid;
         // save the packet to A*S=C
         int index = pkt->sourceid - dc->win_s;
+        //assert(dc->row[index] == NULL);
         dc->row[index] = calloc(1, sizeof(ROW_VEC));
         dc->row[index]->len = 1;
         dc->row[index]->elem = calloc(dc->row[index]->len, sizeof(GF_ELEMENT));
@@ -131,11 +138,13 @@ int activate_decoder(struct decoder *dc, struct packet *pkt)
         dc->win_s = dc->inorder + 1;
         dc->win_e = pkt->win_e;
         dc->dof = 0;
+        // TODO: If some encoded source packets have been "flushed" from the decoder, the repair packet cannot be used
+        
         // process the repair packet to eliminate those already in-order recovered packets from the packet
         // and then save to A*S=C
         for (int i=pkt->win_s; i<=dc->inorder; i++) {
             GF_ELEMENT co = pkt->coes[i-pkt->win_s];
-            galois_multiply_add_region(pkt->syms, dc->recovered[i], co, pktsize);
+            galois_multiply_add_region(pkt->syms, dc->recovered[i % DEC_ALLOC], co, pktsize);
             pkt->coes[i-pkt->win_s] = 0;
         }
         int offset = dc->win_s - pkt->win_s;
@@ -158,6 +167,11 @@ int activate_decoder(struct decoder *dc, struct packet *pkt)
     }
     DEBUG_PRINT(("[Decoder] Decoder activated with decoding window [%d %d], DoF: %d\n", dc->win_s, dc->win_e, dc->dof));
     dc->active = 1;
+    // In case decoding window lenght is only 1 and dof is 1 after activated,
+    // decoding can complete immediately
+    if (dc->dof == (dc->win_e - dc->win_s + 1)) {
+        deactivate_decoder(dc);
+    }
     return 0;
 }
 
@@ -184,10 +198,12 @@ int process_packet(struct decoder *dc, struct packet *pkt)
     }
     // An out-of-order source packet within the decoding window or a repair packet arrives
     if (pkt->repairid>=0) {
+        // TODO: If some encoded source packets have been "flushed" from the decoder, the repair packet cannot be used
+
         // first of all, eliminate those already in-order recovered packets from the repair packets
         for (int i=pkt->win_s; i<=dc->inorder; i++) {
             GF_ELEMENT co = pkt->coes[i-pkt->win_s];
-            galois_multiply_add_region(pkt->syms, dc->recovered[i], co, pktsize);
+            galois_multiply_add_region(pkt->syms, dc->recovered[i % DEC_ALLOC], co, pktsize);
             pkt->coes[i-pkt->win_s] = 0;
         }
         if (pkt->win_e >= dc->win_e) {
@@ -284,8 +300,12 @@ int deactivate_decoder(struct decoder *dc)
         }
         // save recovered packet
         int sourceid = win_s + i;
-        dc->recovered[sourceid] = calloc(pktsize, sizeof(GF_ELEMENT));
-        memcpy(dc->recovered[sourceid], dc->message[i], pktsize*sizeof(GF_ELEMENT));
+        if (dc->recovered[sourceid % DEC_ALLOC] != NULL) {
+            memset(dc->recovered[sourceid % DEC_ALLOC], 0, pktsize*sizeof(GF_ELEMENT));     // overwrite (i.e., "flush") previous older source packets
+        } else {
+            dc->recovered[sourceid % DEC_ALLOC] = calloc(pktsize, sizeof(GF_ELEMENT));
+        }
+        memcpy(dc->recovered[sourceid % DEC_ALLOC], dc->message[i], pktsize*sizeof(GF_ELEMENT));
         free(dc->message[i]);
         dc->message[i] = NULL;
         free(dc->row[i]->elem);
@@ -303,4 +323,37 @@ int deactivate_decoder(struct decoder *dc)
     // NOTE: The active time timer is triggered when the #win_s source packet is lost. The busy period time should not 
     // count in that time slot, because the analytical busy period counts from when the state is already in X=w-d=1, rather than 0.
     return 0;
+}
+
+void free_decoder(struct decoder *dc)
+{
+    assert(dc != NULL);
+    //free(dc->cp);       // not malloced, no need to free
+    //if (dc->pbuf != NULL) {
+    //    free_packet(dc->pbuf);
+    //}
+    int i;
+    for (i=0; i<WIN_ALLOC; i++) {
+        if (dc->row[i] != NULL) {
+            free(dc->row[i]->elem);
+            free(dc->row[i]);
+            dc->row[i] = NULL;
+        }
+        if (dc->message[i] != NULL) {
+            free(dc->message[i]);
+            dc->message[i] = NULL;
+        }
+    }
+    free(dc->row);
+    free(dc->message);
+    for (i=0; i<DEC_ALLOC; i++) {
+        if (dc->recovered[i] != NULL) {
+            free(dc->recovered[i]);
+            dc->recovered[i] = NULL;
+        }
+    }
+    free(dc->recovered);
+    free(dc);
+    dc = NULL;
+    return;
 }

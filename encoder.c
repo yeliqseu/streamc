@@ -1,6 +1,7 @@
 #include "streamcodec.h"
 #include "galois.h"
-#define ENC_ALLOC   50
+#include "assert.h"
+#define ENC_ALLOC   64
 
 // pseudo-random number generator
 extern void mt19937_seed(unsigned long s, unsigned long *mt);
@@ -82,6 +83,7 @@ int enqueue_packet(struct encoder *ec, int sourceid, GF_ELEMENT *syms)
             ec->tail = ec->head -1 + bufsize;
         }
         ec->bufsize = bufsize * 2;
+        DEBUG_PRINT(("[Encoder] Realloc encoder buffer to %d packets\n", ec->bufsize));
     }
     bufsize = ec->bufsize;                  // bufsize may have been changed
     int pos = (ec->tail + 1) % bufsize;     // location to enqueue
@@ -109,9 +111,6 @@ struct packet *output_repair_packet(struct encoder *ec)
     ec->rcount += 1;
     DEBUG_PRINT(("[Encoder] Transmit repair packet %d across window [%d, %d]\n", pkt->repairid, pkt->win_s, pkt->win_e));
     int width = pkt->win_e - pkt->win_s + 1;
-    if (width > EWIN) {
-        printf("[Warning] Encoding window size is too large\n");
-    }
     pkt->coes = calloc(width, sizeof(GF_ELEMENT));
     // init prng using repairid as the seed
     ec->prng.mti = N;
@@ -208,5 +207,30 @@ void free_packet(struct packet *pkt)
         free(pkt->syms);
     free(pkt);
     pkt = NULL;
+    return;
+}
+
+void free_serialized_packet(unsigned char *pktstr)
+{
+    if (pktstr != NULL) {
+        free(pktstr);
+        pktstr = NULL;
+    }
+    return;
+}
+
+void free_encoder(struct encoder *ec)
+{   
+    assert(ec!=NULL);
+    //free(ec->cp);       // not malloced, no need to free
+    for (int i=0; i<ec->bufsize; i++) {
+        if (ec->srcpkt[i]!= NULL) {
+            free(ec->srcpkt[i]);
+            ec->srcpkt[i] = NULL;
+        }
+    }
+    free(ec->srcpkt);
+    free(ec);
+    ec = NULL;
     return;
 }
