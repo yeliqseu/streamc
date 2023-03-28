@@ -17,7 +17,7 @@ ifeq ($(UNAME), Linux)
 	HAS_SSSE3 := $(shell grep -i ssse3 /proc/cpuinfo)
 	HAS_AVX2  := $(shell grep -i avx2 /proc/cpuinfo)
 endif
-CFLAGS0 = -std=c99 -g -lm -DDEBUG
+CFLAGS0 = -std=c99 -O3 -lm -DDEBUG
 #CFLAGS0 = -std=c99 -O3 -lm
 # Add SIMD compiler options
 ifneq ($(HAS_SSSE3),)
@@ -38,6 +38,18 @@ libstreamc.so: $(STREAMC)
 streamcTest: $(STREAMC) test.c
 	$(CC) -o $@ $^ $(CFLAGS0)
 
+streamcTestGEloss: $(STREAMC) test.gilbert.c
+	$(CC) -o $@ $^ $(CFLAGS0)
+
+streamcTestBloss: $(STREAMC) test.bloss.c
+	$(CC) -o $@ $^ $(CFLAGS0)
+
+streamcTestShort: $(STREAMC) test.short.c
+	$(CC) -o $@ $^ $(CFLAGS0)
+
+streamcTestBlossShort: $(STREAMC) test.bloss.short.c
+	$(CC) -o $@ $^ $(CFLAGS0)
+
 #streamcTestGilbert: $(STREAMC) test_gilbert.c
 #	$(CC) -o $@ $^ $(CFLAGS)
 
@@ -48,4 +60,4 @@ streamcTest: $(STREAMC) test.c
 .PHONY: clean
 
 clean:
-	rm -f *.o streamcTest libstreamc.a libstreamc.so
+	rm -f *.o streamcTest streamcTestGEloss streamcTestBloss streamcTestBlossShort streamcTestShort libstreamc.a libstreamc.so

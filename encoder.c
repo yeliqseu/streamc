@@ -6,6 +6,7 @@
 // pseudo-random number generator
 extern void mt19937_seed(unsigned long s, unsigned long *mt);
 extern unsigned long mt19937_randint(unsigned long *mt, int *mti);
+static struct packet *_output_repair_packet(struct encoder *ec, int win_s, int win_e);
 
 struct encoder *initialize_encoder(struct parameters *cp, unsigned char *buf, int nbytes)
 {
@@ -96,9 +97,57 @@ int enqueue_packet(struct encoder *ec, int sourceid, GF_ELEMENT *syms)
     return 0;
 }
 
+struct packet *output_source_packet(struct encoder *ec)
+{
+    int pos;
+    int pktsize = ec->cp->pktsize;
+    struct packet *pkt = calloc(1, sizeof(struct packet));
+    pkt->syms = calloc(pktsize, sizeof(GF_ELEMENT));
+    pkt->sourceid = ec->nextsid;
+    pkt->repairid = -1;
+    
+    pos = (ec->head + (ec->nextsid - ec->headsid)) % (ec->bufsize);
+    memcpy(pkt->syms, ec->srcpkt[pos], pktsize*sizeof(GF_ELEMENT));
+    ec->count += 1;
+    ec->nextsid += 1;
+    return pkt;
+}
+
+struct packet *_output_repair_packet(struct encoder *ec, int win_s, int win_e)
+{
+    assert(win_e >= win_s);
+    assert(win_s >= ec->headsid);
+    assert(win_e <= ec->nextsid - 1);
+    int i, pos;
+    int pktsize = ec->cp->pktsize;
+    struct packet *pkt = calloc(1, sizeof(struct packet));
+    pkt->syms = calloc(pktsize, sizeof(GF_ELEMENT));
+    pkt->sourceid = -1;
+    pkt->repairid = ec->rcount;
+    pkt->win_s = win_s;
+    pkt->win_e = win_e;
+    ec->count  += 1;
+    ec->rcount += 1;
+    int width = pkt->win_e - pkt->win_s + 1;
+    pkt->coes = calloc(width, sizeof(GF_ELEMENT));
+    // init prng using repairid as the seed
+    ec->prng.mti = N;
+    mt19937_seed(pkt->repairid*EWIN, ec->prng.mt);
+    for (i=0; i<width; i++) {
+        GF_ELEMENT co = mt19937_randint(ec->prng.mt, &ec->prng.mti) % (1 << ec->cp->gfpower);
+        pkt->coes[i] = co;
+        // pos = (ec->head + i) % (ec->bufsize);
+        pos = (ec->head + (i + win_s - ec->headsid)) % (ec->bufsize);
+        galois_multiply_add_region(pkt->syms, ec->srcpkt[pos], co, pktsize);
+    }
+    DEBUG_PRINT(("[Encoder] Transmit repair packet %d across window [%d, %d] n_enc_row_ops: %d\n", pkt->repairid, pkt->win_s, pkt->win_e, width));
+    return pkt;
+}
 
 struct packet *output_repair_packet(struct encoder *ec)
 {
+    return _output_repair_packet(ec, ec->headsid, ec->nextsid-1);
+    /*
     int i, pos;
     int pktsize = ec->cp->pktsize;
     struct packet *pkt = calloc(1, sizeof(struct packet));
@@ -122,22 +171,13 @@ struct packet *output_repair_packet(struct encoder *ec)
         galois_multiply_add_region(pkt->syms, ec->srcpkt[pos], co, pktsize);
     }
     return pkt;
+    */
 }
 
-struct packet *output_source_packet(struct encoder *ec)
+struct packet *output_repair_packet_short(struct encoder *ec, int ew_width)
 {
-    int pos;
-    int pktsize = ec->cp->pktsize;
-    struct packet *pkt = calloc(1, sizeof(struct packet));
-    pkt->syms = calloc(pktsize, sizeof(GF_ELEMENT));
-    pkt->sourceid = ec->nextsid;
-    pkt->repairid = -1;
-    
-    pos = (ec->head + (ec->nextsid - ec->headsid)) % (ec->bufsize);
-    memcpy(pkt->syms, ec->srcpkt[pos], pktsize*sizeof(GF_ELEMENT));
-    ec->count += 1;
-    ec->nextsid += 1;
-    return pkt;
+    int win_s = ec->nextsid-ew_width >= ec->headsid ? ec->nextsid-ew_width : ec->headsid;
+    return _output_repair_packet(ec, win_s, ec->nextsid-1);
 }
 
 void flush_acked_packets(struct encoder *ec, int ack_sid)

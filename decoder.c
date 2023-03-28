@@ -7,6 +7,9 @@
 extern void mt19937_seed(unsigned long s, unsigned long *mt);
 extern unsigned long mt19937_randint(unsigned long *mt, int *mti);
 
+static int  n_repair;       // number of repair packets received during decoder activation
+static long n_row_sub_ops;  // number of row operations during subtraction, reset once decoder is deactivated
+
 struct decoder *initialize_decoder(struct parameters *cp)
 {
     struct decoder *dc = calloc(1, sizeof(struct decoder));
@@ -117,6 +120,9 @@ int receive_packet(struct decoder *dc, struct packet *pkt)
 
 int activate_decoder(struct decoder *dc, struct packet *pkt)
 {
+    n_repair = 0;
+    n_row_sub_ops = 0;
+    assert(dc->win_e-dc->win_s+1 <= DEC_ALLOC);
     int pktsize = dc->cp->pktsize;
     if (pkt->sourceid >= 0) {
         // A source packet triggered decoder activation
@@ -135,6 +141,7 @@ int activate_decoder(struct decoder *dc, struct packet *pkt)
         dc->dof = 1;
         DEBUG_PRINT(("[Decoder] Decoder activated by source packet %d \n", pkt->sourceid));
     } else {
+        n_repair += 1;
         dc->win_s = dc->inorder + 1;
         dc->win_e = pkt->win_e;
         dc->dof = 0;
@@ -201,10 +208,12 @@ int process_packet(struct decoder *dc, struct packet *pkt)
         // TODO: If some encoded source packets have been "flushed" from the decoder, the repair packet cannot be used
 
         // first of all, eliminate those already in-order recovered packets from the repair packets
+        n_repair += 1;
         for (int i=pkt->win_s; i<=dc->inorder; i++) {
             GF_ELEMENT co = pkt->coes[i-pkt->win_s];
             galois_multiply_add_region(pkt->syms, dc->recovered[i % DEC_ALLOC], co, pktsize);
             pkt->coes[i-pkt->win_s] = 0;
+            n_row_sub_ops += 1;
         }
         if (pkt->win_e >= dc->win_e) {
             dc->win_e = pkt->win_e;  // expand decoding window if the repair packet covers newer source packets beyond the current window
@@ -314,7 +323,9 @@ int deactivate_decoder(struct decoder *dc)
         dc->row[i] = NULL;
     }
     // Deactivate
-    DEBUG_PRINT(("[Decoder] Inactivating decoder with DW window [%d, %d] of width: %d new in-order: %d\n", dc->win_s, dc->win_e, width, win_e));
+    DEBUG_PRINT(("[Decoder] Inactivating decoder with DW window [%d, %d] of width: %d new in-order: %d n_repair: %d n_sub_row_ops: %ld\n", dc->win_s, dc->win_e, width, win_e, n_repair, n_row_sub_ops));
+    n_repair = 0;
+    n_row_sub_ops = 0;
     dc->inorder = win_e;
     dc->dof = 0;
     dc->win_s = -1;

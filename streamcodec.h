@@ -51,7 +51,7 @@ struct encoder {
     // c) Encoding window [headsid, nextsid-1] (watch for wrap around of their location)
     int         bufsize;            // current buffer size
     int         snum;               // number of queued source packets (including flushed)
-    int         head;               // head index buffered source packets 
+    int         head;               // head index of buffered source packets 
     int         tail;               // tail index of bufferred source packets
     int         headsid;            // source packet id of head
     int         tailsid;            // source packet id of tail
@@ -85,6 +85,7 @@ struct encoder *initialize_encoder(struct parameters *cp, unsigned char *buf, in
 int enqueue_packet(struct encoder *ec, int sourceid, GF_ELEMENT *syms);
 struct packet *output_source_packet(struct encoder *ec);
 struct packet *output_repair_packet(struct encoder *ec);
+struct packet *output_repair_packet_short(struct encoder *ec, int ew_width);
 void flush_acked_packets(struct encoder *ec, int ack_sid);
 void visualize_buffer(struct encoder *ec);
 void free_packet(struct packet *pkt);

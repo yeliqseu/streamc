@@ -12,7 +12,7 @@ int *arrival_time  = NULL;          // time arriving at the sending queue
 int *sent_time     = NULL;          // sending time of each source packet uncoded
 int *inorder_delay = NULL;          // in-order delay := deli_time - sent_time[i];
 
-static struct packet *generate_packet(struct encoder *ec);
+static struct packet *generate_packet(struct encoder *ec, double pshort, int length);
 static int time_to_send_repair(struct encoder *ec);
 
 // Used for testing irregular insertion of repair packets
@@ -22,7 +22,7 @@ int irreg_range = 0;
 int irreg_snum = 0;;
 int *irreg_spos = NULL;
 
-char usage[] = "Usage: ./programName snum arrival repfreq epsilon Tp irange pos1 pos2 ... \n\
+char usage[] = "Usage: ./programName snum arrival repfreq epsilon Tp Pshort ... \n\
                        snum     - maximum number of source packets to transmit\n\
                        arrival  - Bernoulli arrival rate at the sending queue, value: [0, 1)\n\
                                   0 - all source packets available before time 0\n\
@@ -31,11 +31,11 @@ char usage[] = "Usage: ./programName snum arrival repfreq epsilon Tp irange pos1
                                   fixed-interval insertion if repfreq >= 1 (must be integer)\n\
                        epsilon  - erasure probability of the end-to-end link\n\
                        Tp       - propagation delay of channel\n\
-                       irange   - period of the irregular pattern (0: regular or random depending on repfreq)\n\
-                       posX     - positions sending source packets in the irregular range\n";
+                       pshort   - probability of sending a short repair packet\n\
+                       shortlen - encoding window length of short repair packets\n";
 int main(int argc, char *argv[])
 {
-    if (argc <7) {
+    if (argc !=8) {
         printf("%s\n", usage);
         exit(1);
     }
@@ -56,12 +56,8 @@ int main(int argc, char *argv[])
     T_P = atoi(argv[5]);           // propagation delay. Packet sent at time t, if not erased, is received by destination at time t + T_P
 
     // Read positions to send source packets in a period of irregular range
-    irreg_range = atoi(argv[6]);
-    irreg_snum = argc - 7;
-    irreg_spos = calloc(irreg_snum, sizeof(int));
-    for (int i=0; i<irreg_snum; i++) {
-        irreg_spos[i] = atoi(argv[7+i]);
-    }
+    double pshort = atof(argv[6]);
+    double shortlen = atoi(argv[7]);
 
     unsigned char **queue = calloc(T_P+1, sizeof(unsigned char*));      // store propagation delayed packets
     int *feedback = calloc(T_P+1, sizeof(int));                         // store propagation delayed in-order feedback
@@ -103,7 +99,7 @@ int main(int argc, char *argv[])
             eqnsid++;
         }
         //visualize_buffer(ec);
-        struct packet *pkt = generate_packet(ec);
+        struct packet *pkt = generate_packet(ec, pshort, shortlen);
         if (pkt==NULL) {
             continue;
         }
@@ -130,17 +126,6 @@ int main(int argc, char *argv[])
             }
         }
         free_packet(pkt);
-        // With 5% probability, incur random re-order of in-flight packets to simulate out-of-order arrival
-        /*
-        if (slot >= T_P + 5 && rand() % 100 < 5) {
-            int ro_pos1 = rand() % (T_P+1);
-            int ro_pos2 = rand() % (T_P+1);
-            unsigned char *tmp = queue[ro_pos1];
-            queue[ro_pos1] = queue[ro_pos2];
-            queue[ro_pos2] = tmp;
-            printf("[Channel] randomly incur re-ordering of packets at time %d of position %d and %d\n", slot, ro_pos1, ro_pos2);
-        }
-        */
         // Delayed reception
         int pos2 = (slot-T_P) % (T_P+1);    // which packet in the queue to be received at the current slot (due to propagation delay)
         if (slot >= T_P && queue[pos2] != NULL) {
@@ -194,7 +179,7 @@ int main(int argc, char *argv[])
     free_decoder(dc);
 }
 
-struct packet *generate_packet(struct encoder *ec)
+struct packet *generate_packet(struct encoder *ec, double pshort, int length)
 {
     if (ec->snum == 0 || ec->head == -1) {
         // no packet has been queued or all previously queued packets have been flushed
@@ -206,7 +191,11 @@ struct packet *generate_packet(struct encoder *ec)
     int i, pos;
     struct packet *pkt;
     if (time_to_send_repair(ec)) {
-        pkt = output_repair_packet(ec);
+        if (rand() % 10000 < pshort * 10000) {
+            pkt = output_repair_packet_short(ec, length);
+        } else {
+            pkt = output_repair_packet(ec);
+        }
     } else {
         // send a source packet
         pkt = output_source_packet(ec);
