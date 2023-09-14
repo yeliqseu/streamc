@@ -35,23 +35,21 @@ libstreamc.a: $(STREAMC)
 libstreamc.so: $(STREAMC)
 	$(CC) -shared -o libstreamc.so $^
 
-streamcTest: $(STREAMC) test.c
+streamcTestBernouFull: $(STREAMC) examples/test.bernoulli.full.c
 	$(CC) -o $@ $^ $(CFLAGS0)
 
-streamcTestGEloss: $(STREAMC) test.gilbert.c
+streamcTestGEloss: $(STREAMC) examples/test.gilbert.full.c
 	$(CC) -o $@ $^ $(CFLAGS0)
 
-streamcTestBloss: $(STREAMC) test.bloss.c
+streamcTestBlossFull: $(STREAMC) examples/test.bloss.full.c
 	$(CC) -o $@ $^ $(CFLAGS0)
 
-streamcTestShort: $(STREAMC) test.short.c
+streamcTestBernouShort: $(STREAMC) examples/test.bernoulli.short.c
 	$(CC) -o $@ $^ $(CFLAGS0)
 
-streamcTestBlossShort: $(STREAMC) test.bloss.short.c
+streamcTestBlossShort: $(STREAMC) examples/test.bloss.short.c
 	$(CC) -o $@ $^ $(CFLAGS0)
 
-#streamcTestGilbert: $(STREAMC) test_gilbert.c
-#	$(CC) -o $@ $^ $(CFLAGS)
 
 %.o: %.c $(DEPS)
 	$(CC) -c -fPIC -o $@ $< $(CFLAGS0) $(CFLAGS1)
@@ -60,4 +58,4 @@ streamcTestBlossShort: $(STREAMC) test.bloss.short.c
 .PHONY: clean
 
 clean:
-	rm -f *.o streamcTest streamcTestGEloss streamcTestBloss streamcTestBlossShort streamcTestShort libstreamc.a libstreamc.so
+	rm -f *.o streamcTest* libstreamc.a libstreamc.so

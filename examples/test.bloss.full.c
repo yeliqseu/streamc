@@ -4,7 +4,7 @@
 #include <sys/time.h>
 #include <math.h>
 #include <fcntl.h>
-#include "streamcodec.h"
+#include "../streamcodec.h"
 
 // batch packet loss model
 #define CH_GOOD 0
@@ -20,7 +20,7 @@ int *sent_time     = NULL;          // sending time of each source packet uncode
 int *deliver_time  = NULL;          // in-order delivery of each source packet at decoder      
 int *inorder_delay = NULL;          // in-order delay := deli_time - sent_time[i];
 
-static struct packet *generate_packet(struct encoder *ec, double pshort, int shortlen);
+static struct packet *generate_packet(struct encoder *ec);
 static int time_to_send_repair(struct encoder *ec);
 static int batch_erasure(double pbatch);
 static int draw_batch_size(void);
@@ -42,12 +42,10 @@ char usage[] = "Usage: ./programName snum repfreq epsilon\n\
                                   random insertion of repair packets if repfreq < 1\n\
                                   fixed-interval insertion if repfreq >= 1 (must be integer)\n\
                        p_batch  - probability that a batch error occurs\n\
-                       Tp       - propagation delay of channel\n\
-                       pshort   - probability of sending short-length EW packets\n\
-                       shortlen - length of short packet\n";
+                       Tp       - propagation delay of channel\n";
 int main(int argc, char *argv[])
 {
-    if (argc != 8) {
+    if (argc != 6) {
         printf("%s\n", usage);
         exit(1);
     }
@@ -65,9 +63,6 @@ int main(int argc, char *argv[])
     double pbatch = atof(argv[4]);
     int T_P = atoi(argv[5]);
     int T_ACK = 1;          // feedback i_ord every T_ACK time slots
-
-    double pshort = atof(argv[6]);
-    int shortlen = atoi(argv[7]);
 
     // queues to simulate channel propagation delay
     unsigned char **queue = calloc(T_P+1, sizeof(unsigned char*));      // store propagation delayed packets
@@ -110,7 +105,7 @@ int main(int argc, char *argv[])
             eqnsid++;
         }
         //visualize_buffer(ec);
-        struct packet *pkt = generate_packet(ec, pshort, shortlen);
+        struct packet *pkt = generate_packet(ec);
         if (pkt==NULL) {
             continue;
         }
@@ -218,7 +213,7 @@ static int batch_erasure(double p_batch)
     return 0;
 }
 
-struct packet *generate_packet(struct encoder *ec, double pshort, int length)
+struct packet *generate_packet(struct encoder *ec)
 {
     if (ec->snum == 0 || ec->head == -1) {
         // no packet has been queued or all previously queued packets have been flushed
@@ -230,11 +225,7 @@ struct packet *generate_packet(struct encoder *ec, double pshort, int length)
     int i, pos;
     struct packet *pkt;
     if (time_to_send_repair(ec)) {
-        if (rand() % 10000 < pshort * 10000) {
-            pkt = output_repair_packet_short(ec, length);
-        } else {
-            pkt = output_repair_packet(ec);
-        }
+        pkt = output_repair_packet(ec);
     } else {
         // send a source packet
         pkt = output_source_packet(ec);
@@ -242,7 +233,6 @@ struct packet *generate_packet(struct encoder *ec, double pshort, int length)
     }
     return pkt;
 }
-
 
 
 static int time_to_send_repair(struct encoder *ec)
